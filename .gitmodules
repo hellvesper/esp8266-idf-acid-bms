@@ -1,0 +1,3 @@
+[submodule "components/ads1115"]
+	path = components/ads1115
+	url = https://github.com/Molorius/esp32-ads1115.git
