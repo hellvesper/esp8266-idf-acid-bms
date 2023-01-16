@@ -52,19 +52,21 @@ static const char *TAG = "main";
 #define PRINT_INTERVAL 1000 	// millis
 #define SHUNT_RESISTOR_mOhm 1.0F // 0.001 Ohm resistor value in milliohms
 #define SHUNT_RESISTOR_Ohm 0.001 // 0.001 Ohm resistor value in milliohms
+#define VOLTAGE_DIVIDER_RATIO 11 // Vsource / Vout
 
-#define CONFIG_BROKER_URL "mqtt://test.mosquitto.org"
+#define CONFIG_BROKER_URL "mqtt://tranquility.vesp.dev"
 
 typedef struct {
     double volts;
     double amps;
     double power;
+    double amphour;
     double watts;
     bool lock;
 } power_t;
 
 power_t power;
-
+esp_mqtt_client_handle_t mqtt_client;
 /**
  * @brief i2c master initialization
  */
@@ -74,10 +76,10 @@ static esp_err_t i2c_master_init()
     i2c_config_t conf;
     conf.mode = I2C_MODE_MASTER;
     conf.sda_io_num = I2C_EXAMPLE_MASTER_SDA_IO;
-    conf.sda_pullup_en = 1;
+    conf.sda_pullup_en = 1U;
     conf.scl_io_num = I2C_EXAMPLE_MASTER_SCL_IO;
-    conf.scl_pullup_en = 1;
-    conf.clk_stretch_tick = 300; // 300 ticks, Clock stretch is about 210us, you can make changes according to the actual situation.
+    conf.scl_pullup_en = 1U;
+    conf.clk_stretch_tick = 300U; // 300 ticks, Clock stretch is about 210us, you can make changes according to the actual situation.
     ESP_ERROR_CHECK(i2c_driver_install(i2c_master_port, conf.mode));
     ESP_ERROR_CHECK(i2c_param_config(i2c_master_port, &conf));
     return ESP_OK;
@@ -87,8 +89,7 @@ _Noreturn static void i2c_bus_scan_task (void *arg) {
     i2c_master_init();
 
     while (1) {
-        uint8_t device_count = 0;
-        for (uint8_t dev_address = 1; dev_address < 127; dev_address++) {
+        for (uint8_t dev_address = 1U; dev_address < 127U; dev_address++) {
             i2c_cmd_handle_t cmd = i2c_cmd_link_create();
             i2c_master_start(cmd);
             i2c_master_write_byte(cmd, (dev_address << 1) | I2C_MASTER_WRITE, I2C_ACK_CHECK_EN);
@@ -97,7 +98,6 @@ _Noreturn static void i2c_bus_scan_task (void *arg) {
 
             if (ret == ESP_OK) {
                 ESP_LOGI(TAG, "found i2c device address = 0x%02x", dev_address);
-                device_count++;
             }
 
             i2c_cmd_link_delete(cmd);
@@ -119,16 +119,17 @@ static void ads1115_task(void *arg) {
     static bool VA = true;
 
     ads1115_set_mux(&adc, ADS1115_MUX_0_1);
-//    ads1115_set_pga(&ads, ADS1115_FSR_2_048);
-    ads1115_set_mode(&adc, ADS1115_MODE_CONTINUOUS);
-    ads1115_set_sps(&adc, ADS1115_SPS_8); // than lower rate than more noise will be filtered with ads filter
+    ads1115_set_pga(&adc, ADS1115_FSR_2_048);
+    ads1115_set_mode(&adc, ADS1115_MODE_SINGLE);
+    ads1115_set_sps(&adc, ADS1115_SPS_64); // than lower rate than more noise will be filtered with ads filter
     while (1) {
         if (VA) {
             power.lock = true;
             adc_raw = ads1115_get_raw(&adc);
-            power.volts = ads1115_raw_to_voltage(&adc, adc_raw);
+            power.volts = ads1115_raw_to_voltage(&adc, adc_raw) * (double )VOLTAGE_DIVIDER_RATIO;
             ads1115_set_mux(&adc, ADS1115_MUX_2_3);
             VA = !VA;
+            ESP_LOGI(TASK_TAG, "ADC AINP0N1 = %d | Volts = %f | Amp = %f | Free: %d", adc_raw, power.volts, power.amps, uxTaskGetStackHighWaterMark(NULL));
         } else {
             power.lock = true;
             adc_raw = ads1115_get_raw(&adc);
@@ -136,14 +137,15 @@ static void ads1115_task(void *arg) {
             power.amps = volts / SHUNT_RESISTOR_Ohm;
             ads1115_set_mux(&adc, ADS1115_MUX_0_1);
             VA = !VA;
+            ESP_LOGI(TASK_TAG, "ADC AINP2N3 = %d | Volts = %f | Amp = %f | Free: %d", adc_raw, power.volts, power.amps, uxTaskGetStackHighWaterMark(NULL));
         }
 
         power.power = power.volts * power.amps;
-        power.watts += power.power;
+        power.watts += power.power / (double )HOUR_MILLIS * (double)MEASURE_INTERVAL/2;
+        power.amphour += power.amps / (double )HOUR_MILLIS * (double)MEASURE_INTERVAL/2;
         power.lock = false;
 
-        ESP_LOGI(TASK_TAG, "ADC AINP0 = %d | Volts = %f | Free: %d", adc_raw, volts, uxTaskGetStackHighWaterMark(NULL));
-        vTaskDelay(pdMS_TO_TICKS(MEASURE_INTERVAL/2));
+        vTaskDelay(pdMS_TO_TICKS(MEASURE_INTERVAL)/2U);
     }
 
     i2c_driver_delete(I2C_EXAMPLE_MASTER_NUM);
@@ -154,23 +156,23 @@ static void ads1115_task(void *arg) {
  */
 static esp_err_t mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
 {
-    esp_mqtt_client_handle_t client = event->client;
-    int msg_id;
+//    esp_mqtt_client_handle_t client = event->client;
+//    int msg_id;
     // your_context_t *context = event->context;
     switch (event->event_id) {
         case MQTT_EVENT_CONNECTED:
             ESP_LOGI(TAG, "MQTT_EVENT_CONNECTED");
-            msg_id = esp_mqtt_client_publish(client, "/topic/qos1", "data_3", 0, 1, 0);
-            ESP_LOGI(TAG, "sent publish successful, msg_id=%d", msg_id);
-
-            msg_id = esp_mqtt_client_subscribe(client, "/topic/qos0", 0);
-            ESP_LOGI(TAG, "sent subscribe successful, msg_id=%d", msg_id);
-
-            msg_id = esp_mqtt_client_subscribe(client, "/topic/qos1", 1);
-            ESP_LOGI(TAG, "sent subscribe successful, msg_id=%d", msg_id);
-
-            msg_id = esp_mqtt_client_unsubscribe(client, "/topic/qos1");
-            ESP_LOGI(TAG, "sent unsubscribe successful, msg_id=%d", msg_id);
+//            msg_id = esp_mqtt_client_publish(client, "/topic/qos1", "data_3", 0, 1, 0);
+//            ESP_LOGI(TAG, "sent publish successful, msg_id=%d", msg_id);
+//
+//            msg_id = esp_mqtt_client_subscribe(client, "/topic/qos0", 0);
+//            ESP_LOGI(TAG, "sent subscribe successful, msg_id=%d", msg_id);
+//
+//            msg_id = esp_mqtt_client_subscribe(client, "/topic/qos1", 1);
+//            ESP_LOGI(TAG, "sent subscribe successful, msg_id=%d", msg_id);
+//
+//            msg_id = esp_mqtt_client_unsubscribe(client, "/topic/qos1");
+//            ESP_LOGI(TAG, "sent unsubscribe successful, msg_id=%d", msg_id);
             break;
         case MQTT_EVENT_DISCONNECTED:
             ESP_LOGI(TAG, "MQTT_EVENT_DISCONNECTED");
@@ -178,8 +180,8 @@ static esp_err_t mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
 
         case MQTT_EVENT_SUBSCRIBED:
             ESP_LOGI(TAG, "MQTT_EVENT_SUBSCRIBED, msg_id=%d", event->msg_id);
-            msg_id = esp_mqtt_client_publish(client, "/topic/qos0", "data", 0, 0, 0);
-            ESP_LOGI(TAG, "sent publish successful, msg_id=%d", msg_id);
+//            msg_id = esp_mqtt_client_publish(client, "/topic/qos0", "data", 0, 0, 0);
+//            ESP_LOGI(TAG, "sent publish successful, msg_id=%d", msg_id);
             break;
         case MQTT_EVENT_UNSUBSCRIBED:
             ESP_LOGI(TAG, "MQTT_EVENT_UNSUBSCRIBED, msg_id=%d", event->msg_id);
@@ -213,9 +215,33 @@ static void mqtt_app_start(void)
             .uri = CONFIG_BROKER_URL,
     };
 
-    esp_mqtt_client_handle_t client = esp_mqtt_client_init(&mqtt_cfg);
-    esp_mqtt_client_register_event(client, ESP_EVENT_ANY_ID, mqtt_event_handler, client);
-    esp_mqtt_client_start(client);
+//    esp_mqtt_client_handle_t client = esp_mqtt_client_init(&mqtt_cfg);
+    mqtt_client = esp_mqtt_client_init(&mqtt_cfg);
+    esp_mqtt_client_register_event(mqtt_client, ESP_EVENT_ANY_ID, mqtt_event_handler, mqtt_client);
+    esp_mqtt_client_start(mqtt_client);
+
+}
+
+static void mqtt_task(void *arg) {
+    static char buffer [10];
+    while (1) {
+        if (!power.lock) {
+            snprintf(buffer, 10, "%.4f", power.volts);
+            esp_mqtt_client_publish(mqtt_client, "battery/voltage", buffer, 0, 0, 0);
+            snprintf(buffer, 10, "%.4f", power.amps);
+            esp_mqtt_client_publish(mqtt_client, "battery/current", buffer, 0, 0, 0);
+            snprintf(buffer, 10, "%.4f", power.power);
+            esp_mqtt_client_publish(mqtt_client, "battery/power", buffer, 0, 0, 0);
+            snprintf(buffer, 10, "%.4f", power.watts);
+            esp_mqtt_client_publish(mqtt_client, "battery/watts", buffer, 0, 0, 1);
+            snprintf(buffer, 10, "%.4f", power.amphour);
+            esp_mqtt_client_publish(mqtt_client, "battery/amps", buffer, 0, 0, 1);
+            vTaskDelay(pdMS_TO_TICKS(1000));
+        } else {
+            vTaskDelay(pdMS_TO_TICKS(100));
+        }
+
+    }
 }
 
 void app_main(void)
@@ -247,4 +273,5 @@ void app_main(void)
     ESP_ERROR_CHECK(example_connect());
 
     mqtt_app_start();
+    xTaskCreate(mqtt_task, "mqtt_task", 2048, NULL, 10, NULL);
 }
