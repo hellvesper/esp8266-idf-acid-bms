@@ -30,6 +30,8 @@
 #include "mqtt_client.h"
 #include "ads1115.h"
 
+//#include "screen_driver.h"
+
 
 static const char *TAG = "main";
 
@@ -61,6 +63,12 @@ static const char *TAG = "main";
 
 #define GPIO_OUTPUT_IO_0     GPIO_NUM_2 // D4 Wemos
 #define GPIO_OUTPUT_PIN_SEL  (1ULL<<GPIO_OUTPUT_IO_0)
+
+/** If you use a spi interface screen, set the USE_SPI_SCREEN to 1, otherwise use 8080 interface. */
+#define USE_SPI_SCREEN 1
+
+#define MAX_ZOOM  2500
+#define ITERATION 128
 
 
 typedef struct {
@@ -254,6 +262,8 @@ static void mqtt_task(void *arg) {
 static void charging_control_task(void *arg) {
 //    gpio_set_level(GPIO_OUTPUT_IO_0, 0);
 }
+
+
 
 void app_main(void)
 {
