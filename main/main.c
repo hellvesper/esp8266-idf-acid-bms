@@ -26,6 +26,8 @@
 #include "lwip/netdb.h"
 
 #include "driver/i2c.h"
+#include "driver/gpio.h"
+#include "driver/adc.h"
 #include "mqtt_client.h"
 #include "ads1115.h"
 
@@ -44,17 +46,21 @@ static const char *TAG = "main";
 #define I2C_EXAMPLE_MASTER_TX_BUF_DISABLE   0                /*!< I2C master do not need buffer */
 #define I2C_EXAMPLE_MASTER_RX_BUF_DISABLE   0                /*!< I2C master do not need buffer */
 #define I2C_BUS_MS_TO_WAIT                  200
-#define I2C_BUS_TICKS_TO_WAIT (I2C_BUS_MS_TO_WAIT/portTICK_RATE_MS)
+#define I2C_BUS_TICKS_TO_WAIT               (I2C_BUS_MS_TO_WAIT/portTICK_RATE_MS)
 #define I2C_ACK_CHECK_EN                    0x1     /*!< I2C master will check ack from slave*/
 
-#define HOUR_MILLIS 3.6e6
-#define MEASURE_INTERVAL 500 	// millis
-#define PRINT_INTERVAL 1000 	// millis
-#define SHUNT_RESISTOR_mOhm 1.0F // 0.001 Ohm resistor value in milliohms
-#define SHUNT_RESISTOR_Ohm 0.001 // 0.001 Ohm resistor value in milliohms
-#define VOLTAGE_DIVIDER_RATIO 11 // Vsource / Vout
+#define HOUR_MILLIS            3.6e6
+#define MEASURE_INTERVAL       500 	 // millis
+#define PRINT_INTERVAL         1000  // millis
+#define SHUNT_RESISTOR_mOhm    1.0F  // 0.001 Ohm resistor value in milliohms
+#define SHUNT_RESISTOR_Ohm     0.001 // 0.001 Ohm resistor value in milliohms
+#define VOLTAGE_DIVIDER_RATIO  11    // Vsource / Vout
 
 #define CONFIG_BROKER_URL "mqtt://tranquility.vesp.dev"
+
+#define GPIO_OUTPUT_IO_0     GPIO_NUM_2 // D4 Wemos
+#define GPIO_OUTPUT_PIN_SEL  (1ULL<<GPIO_OUTPUT_IO_0)
+
 
 typedef struct {
     double volts;
@@ -85,7 +91,7 @@ static esp_err_t i2c_master_init()
     return ESP_OK;
 }
 
-_Noreturn static void i2c_bus_scan_task (void *arg) {
+static void i2c_bus_scan_task (void *arg) {
     i2c_master_init();
 
     while (1) {
@@ -244,11 +250,79 @@ static void mqtt_task(void *arg) {
     }
 }
 
+static void adc_task()
+{
+    int x;
+    uint16_t adc_data[100];
+    double voltage;
+
+    // 1. init adc
+    adc_config_t adc_config;
+
+    // Depend on menuconfig->Component config->PHY->vdd33_const value
+    // When measuring system voltage(ADC_READ_VDD_MODE), vdd33_const must be set to 255.
+    adc_config.mode = ADC_READ_TOUT_MODE;
+    adc_config.clk_div = 8; // ADC sample collection clock = 80MHz/clk_div = 10MHz
+    ESP_ERROR_CHECK(adc_init(&adc_config));
+
+    while (1) {
+        if (ESP_OK == adc_read(&adc_data[0])) {
+            voltage = adc_data[0]*VOLTAGE_DIVIDER_RATIO*2.999/1000;
+            power.volts = voltage;
+            ESP_LOGI(TAG, "adc read: %d, vols: %f, mem: %d\r\n", adc_data[0]*VOLTAGE_DIVIDER_RATIO, voltage,     uxTaskGetStackHighWaterMark(NULL));
+        }
+
+//        ESP_LOGI(TAG, "adc read fast:\r\n");
+
+//        if (ESP_OK == adc_read_fast(adc_data, 100)) {
+//            for (x = 0; x < 100; x++) {
+//                printf("%d\n", adc_data[x]);
+//            }
+//        }
+
+        vTaskDelay(1000 / portTICK_RATE_MS);
+    }
+}
+
+static void charging_control_task(void *arg) {
+    gpio_set_level(GPIO_OUTPUT_IO_0, 1); // default turn off charging
+    while (1) {
+        // Charge level < 90%, turn on charging
+        if (power.volts < 12.5) {
+            gpio_set_level(GPIO_OUTPUT_IO_0, 0);
+            ESP_LOGI(TAG, "Turn ON charging, voltage level is below 90%%: %f", power.volts);
+        }
+        // full charge, turn off charger
+        if (power.volts >= 14.7) {
+            gpio_set_level(GPIO_OUTPUT_IO_0, 1);
+//            power.watts = 0; // reset watts
+            ESP_LOGI(TAG, "Turn OFF charging, voltage level is over 100%%: %f", power.volts);
+        }
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+}
+
 void app_main(void)
 {
+    gpio_config_t io_conf;
+    //disable interrupt
+    io_conf.intr_type = GPIO_INTR_DISABLE;
+    //set as output mode
+    io_conf.mode = GPIO_MODE_OUTPUT;
+    //bit mask of the pins that you want to set,e.g.GPIO15/16
+    io_conf.pin_bit_mask = GPIO_OUTPUT_PIN_SEL;
+    //disable pull-down mode
+    io_conf.pull_down_en = 0;
+    //disable pull-up mode
+    io_conf.pull_up_en = 0;
+    //configure GPIO with the given settings
+    gpio_config(&io_conf);
+
+//    xTaskCreate(charging_control_task, "charging_control_task", 512, NULL, 5, NULL);
+
     //start i2c task
     //xTaskCreate(i2c_bus_scan_task, "i2c_bus_scan_task", 2048, NULL, 10, NULL);
-    xTaskCreate(ads1115_task, "ads1115_task", 2048, NULL, 10, NULL);
+//    xTaskCreate(ads1115_task, "ads1115_task", 2048, NULL, 10, NULL);
 
     ESP_LOGI(TAG, "[APP] Startup..");
     ESP_LOGI(TAG, "[APP] Free memory: %d bytes", esp_get_free_heap_size());
@@ -272,6 +346,19 @@ void app_main(void)
      */
     ESP_ERROR_CHECK(example_connect());
 
+//    // 1. init adc
+//    adc_config_t adc_config;
+//
+//    // Depend on menuconfig->Component config->PHY->vdd33_const value
+//    // When measuring system voltage(ADC_READ_VDD_MODE), vdd33_const must be set to 255.
+//    adc_config.mode = ADC_READ_TOUT_MODE;
+//    adc_config.clk_div = 8; // ADC sample collection clock = 80MHz/clk_div = 10MHz
+//    ESP_ERROR_CHECK(adc_init(&adc_config));
+
+    // 2. Create a adc task to read adc value
+    xTaskCreate(adc_task, "adc_task", 2048, NULL, 5, NULL);
+
     mqtt_app_start();
     xTaskCreate(mqtt_task, "mqtt_task", 2048, NULL, 10, NULL);
+    xTaskCreate(charging_control_task, "charging_control_task", 2048, NULL, 10, NULL);
 }
