@@ -293,7 +293,7 @@ static void charging_control_task(void *arg) {
             ESP_LOGI(TAG, "Turn ON charging, voltage level is below 90%%: %f", power.volts);
         }
         // full charge, turn off charger
-        if (power.volts >= 14.7) {
+        if (power.volts >= 14.65) {
             gpio_set_level(GPIO_OUTPUT_IO_0, 1);
 //            power.watts = 0; // reset watts
             ESP_LOGI(TAG, "Turn OFF charging, voltage level is over 100%%: %f", power.volts);
