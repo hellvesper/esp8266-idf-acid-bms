@@ -1,7 +1,6 @@
 #include <sys/cdefs.h>
 
 //#include <stdlib.h>
-#include <stdio.h>
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
@@ -55,7 +54,7 @@ static const char *TAG = "main";
 #define SHUNT_RESISTOR_Ohm     0.001 // 0.001 Ohm resistor value in milliohms
 #define VOLTAGE_DIVIDER_RATIO  11    // Vsource / Vout
 
-#define CONFIG_BROKER_URL "mqtt://tranquility.vesp.dev"
+#define CONFIG_BROKER_URL "mqtt://test.mosquitto.org"
 
 #define GPIO_OUTPUT_IO_0     GPIO_NUM_2 // D4 Wemos
 #define GPIO_OUTPUT_PIN_SEL  (1ULL<<GPIO_OUTPUT_IO_0)
