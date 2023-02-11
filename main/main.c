@@ -133,7 +133,7 @@ static void ads1115_task(void *arg) {
             power.volts = ads1115_raw_to_voltage(&adc, adc_raw) * (double )VOLTAGE_DIVIDER_RATIO;
             ads1115_set_mux(&adc, ADS1115_MUX_2_3);
             VA = !VA;
-            ESP_LOGI(TASK_TAG, "ADC AINP0N1 = %d | Volts = %f | Amp = %f | Free: %d", adc_raw, power.volts, power.amps, uxTaskGetStackHighWaterMark(NULL));
+//            ESP_LOGI(TASK_TAG, "ADC AINP0N1 = %d | Volts = %f | Amp = %f | Free: %d", adc_raw, power.volts, power.amps, uxTaskGetStackHighWaterMark(NULL));
         } else {
             power.lock = true;
             adc_raw = ads1115_get_raw(&adc);
@@ -141,7 +141,7 @@ static void ads1115_task(void *arg) {
             power.amps = volts / SHUNT_RESISTOR_Ohm;
             ads1115_set_mux(&adc, ADS1115_MUX_0_1);
             VA = !VA;
-            ESP_LOGI(TASK_TAG, "ADC AINP2N3 = %d | Volts = %f | Amp = %f | Free: %d", adc_raw, power.volts, power.amps, uxTaskGetStackHighWaterMark(NULL));
+//            ESP_LOGI(TASK_TAG, "ADC AINP2N3 = %d | Volts = %f | Amp = %f | Free: %d", adc_raw, power.volts, power.amps, uxTaskGetStackHighWaterMark(NULL));
         }
 
         power.power = power.volts * power.amps;
@@ -227,19 +227,48 @@ static void mqtt_app_start(void)
 }
 
 static void mqtt_task(void *arg) {
-    static char buffer [10];
+    static char buffer [20];
+//    static bool just_started = true;
     while (1) {
+//        if (just_started) {
+//            char err_buf [100];
+//            esp_get_minimum_free_heap_size();
+//            esp_reset_reason();
+//            esp_mqtt_client_publish(mqtt_client, "battery/debug", err_buf, 0, 0, 1);
+//        }
         if (!power.lock) {
-            snprintf(buffer, 10, "%.4f", power.volts);
+            snprintf(buffer, 20, "%.4f", power.volts);
             esp_mqtt_client_publish(mqtt_client, "battery/voltage", buffer, 0, 0, 0);
-            snprintf(buffer, 10, "%.4f", power.amps);
+            snprintf(buffer, 20, "%.4f", power.amps);
             esp_mqtt_client_publish(mqtt_client, "battery/current", buffer, 0, 0, 0);
-            snprintf(buffer, 10, "%.4f", power.power);
+            snprintf(buffer, 20, "%.4f", power.power);
             esp_mqtt_client_publish(mqtt_client, "battery/power", buffer, 0, 0, 0);
-            snprintf(buffer, 10, "%.4f", power.watts);
+            snprintf(buffer, 20, "%.4f", power.watts);
             esp_mqtt_client_publish(mqtt_client, "battery/watts", buffer, 0, 0, 1);
-            snprintf(buffer, 10, "%.4f", power.amphour);
+            snprintf(buffer, 20, "%.4f", power.amphour);
             esp_mqtt_client_publish(mqtt_client, "battery/amps", buffer, 0, 0, 1);
+
+            /*
+             * debug
+             *
+             *    0 ESP_RST_UNKNOWN = 0,    //!< Reset reason can not be determined
+             *    1 ESP_RST_POWERON,        //!< Reset due to power-on event
+             *    2 ESP_RST_EXT,            //!< Reset by external pin (not applicable for ESP8266)
+             *    3 ESP_RST_SW,             //!< Software reset via esp_restart
+             *    4 ESP_RST_PANIC,          //!< Software reset due to exception/panic
+             *    5 ESP_RST_INT_WDT,        //!< Reset (software or hardware) due to interrupt watchdog
+             *    6 ESP_RST_TASK_WDT,       //!< Reset due to task watchdog
+             *    7 ESP_RST_WDT,            //!< Reset due to other watchdogs
+             *    8 ESP_RST_DEEPSLEEP,      //!< Reset after exiting deep sleep mode
+             *    9 ESP_RST_BROWNOUT,       //!< Brownout reset (software or hardware)
+             *   10 ESP_RST_SDIO,           //!< Reset over SDIO
+             *   11 ESP_RST_FAST_SW,        //!< Fast reboot
+             */
+            snprintf(buffer, 20, "%d", esp_reset_reason());
+            esp_mqtt_client_publish(mqtt_client, "battery/debug_reason", buffer, 0, 0, 0);
+            snprintf(buffer, 20, "%d", esp_get_minimum_free_heap_size());
+            esp_mqtt_client_publish(mqtt_client, "battery/debug_min_heap", buffer, 0, 0, 0);
+
             vTaskDelay(pdMS_TO_TICKS(1000));
         } else {
             vTaskDelay(pdMS_TO_TICKS(100));
@@ -248,6 +277,24 @@ static void mqtt_task(void *arg) {
     }
 }
 
+/*
+ * Discharge levels (unloaded measurement)
+ * ------------- Safe discharge
+ * 100% - 13.00V
+ *  90% - 12.75V
+ *  80% - 12.50V
+ *  70% - 12.30V
+ *  60% - 12.15V
+ *  50% - 12.05V
+ *  ------------ Acceptable discharge
+ *  40% - 11.95V
+ *  30% - 11.81V
+ *  ============ Deep discharge, capacity reduced
+ *  20% - 11.66V
+ *  10% - 11.51V
+ *   0% - 10.50V
+ *
+ */
 static void charging_control_task(void *arg) {
     gpio_set_level(GPIO_OUTPUT_IO_0, 1); // default turn off charging
     while (1) {
@@ -257,7 +304,7 @@ static void charging_control_task(void *arg) {
             ESP_LOGI(TAG, "Turn ON charging, voltage level is below 90%%: %f", power.volts);
         }
         // full charge, turn off charger
-        if (power.volts >= 14.7) {
+        if (power.volts >= 14.6) {
             gpio_set_level(GPIO_OUTPUT_IO_0, 1);
 //            power.watts = 0; // reset watts
             ESP_LOGI(TAG, "Turn OFF charging, voltage level is over 100%%: %f", power.volts);
