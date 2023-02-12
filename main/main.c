@@ -27,25 +27,50 @@
 #include "driver/i2c.h"
 #include "driver/gpio.h"
 #include "mqtt_client.h"
-#include "ads1115.h"
-
+//#include "ads1115.h"
+#include <ads111x.h>
+#include <string.h>
 
 static const char *TAG = "main";
 
+/*
+ * ADS1115 config
+ */
+
+#define I2C_PORT 0
+
+#ifndef APP_CPU_NUM
+#define APP_CPU_NUM PRO_CPU_NUM
+#endif
+
+#define GAIN ADS111X_GAIN_2V048 // +-2.048V
 
 #define ADS111X_ADDR_GND 0x48 //!< I2C device address with ADDR pin connected to ground
 #define ADS111X_ADDR_VCC 0x49 //!< I2C device address with ADDR pin connected to VCC
 #define ADS111X_ADDR_SDA 0x4a //!< I2C device address with ADDR pin connected to SDA
 #define ADS111X_ADDR_SCL 0x4b //!< I2C device address with ADDR pin connected to SCL
 
-#define I2C_EXAMPLE_MASTER_SCL_IO           5                /*!< gpio number for I2C master clock D1 Wemos */
-#define I2C_EXAMPLE_MASTER_SDA_IO           4                /*!< gpio number for I2C master data  D2 Wemos  */
-#define I2C_EXAMPLE_MASTER_NUM              I2C_NUM_0        /*!< I2C port number for master dev */
-#define I2C_EXAMPLE_MASTER_TX_BUF_DISABLE   0                /*!< I2C master do not need buffer */
-#define I2C_EXAMPLE_MASTER_RX_BUF_DISABLE   0                /*!< I2C master do not need buffer */
-#define I2C_BUS_MS_TO_WAIT                  200
-#define I2C_BUS_TICKS_TO_WAIT               (I2C_BUS_MS_TO_WAIT/portTICK_RATE_MS)
-#define I2C_ACK_CHECK_EN                    0x1     /*!< I2C master will check ack from slave*/
+//#define I2C_EXAMPLE_MASTER_SCL_IO           5                /*!< gpio number for I2C master clock D1 Wemos */
+//#define I2C_EXAMPLE_MASTER_SDA_IO           4                /*!< gpio number for I2C master data  D2 Wemos  */
+//#define I2C_EXAMPLE_MASTER_NUM              I2C_NUM_0        /*!< I2C port number for master dev */
+//#define I2C_EXAMPLE_MASTER_TX_BUF_DISABLE   0                /*!< I2C master do not need buffer */
+//#define I2C_EXAMPLE_MASTER_RX_BUF_DISABLE   0                /*!< I2C master do not need buffer */
+//#define I2C_BUS_MS_TO_WAIT                  200
+//#define I2C_BUS_TICKS_TO_WAIT               (I2C_BUS_MS_TO_WAIT/portTICK_RATE_MS)
+//#define I2C_ACK_CHECK_EN                    0x1     /*!< I2C master will check ack from slave*/
+
+// I2C addresses
+static const uint8_t addr[CONFIG_EXAMPLE_DEV_COUNT] = {
+        ADS111X_ADDR_GND,
+//        ADS111X_ADDR_VCC
+};
+
+// Descriptors
+static i2c_dev_t devices[CONFIG_EXAMPLE_DEV_COUNT];
+
+// Gain value
+static float gain_val;
+
 
 #define HOUR_MILLIS            3.6e6
 #define MEASURE_INTERVAL       500 	 // millis
@@ -54,7 +79,7 @@ static const char *TAG = "main";
 #define SHUNT_RESISTOR_Ohm     0.001 // 0.001 Ohm resistor value in milliohms
 #define VOLTAGE_DIVIDER_RATIO  11    // Vsource / Vout
 
-#define CONFIG_BROKER_URL "mqtt://test.mosquitto.org"
+#define CONFIG_BROKER_URL "mqtt://tranquility.vesp.dev"
 
 #define GPIO_OUTPUT_IO_0     GPIO_NUM_2 // D4 Wemos
 #define GPIO_OUTPUT_PIN_SEL  (1ULL<<GPIO_OUTPUT_IO_0)
@@ -74,87 +99,174 @@ esp_mqtt_client_handle_t mqtt_client;
 /**
  * @brief i2c master initialization
  */
-static esp_err_t i2c_master_init()
+//static esp_err_t i2c_master_init()
+//{
+//    int i2c_master_port = I2C_EXAMPLE_MASTER_NUM;
+//    i2c_config_t conf;
+//    conf.mode = I2C_MODE_MASTER;
+//    conf.sda_io_num = I2C_EXAMPLE_MASTER_SDA_IO;
+//    conf.sda_pullup_en = 1U;
+//    conf.scl_io_num = I2C_EXAMPLE_MASTER_SCL_IO;
+//    conf.scl_pullup_en = 1U;
+//    conf.clk_stretch_tick = 300U; // 300 ticks, Clock stretch is about 210us, you can make changes according to the actual situation.
+//    ESP_ERROR_CHECK(i2c_driver_install(i2c_master_port, conf.mode));
+//    ESP_ERROR_CHECK(i2c_param_config(i2c_master_port, &conf));
+//    return ESP_OK;
+//}
+//
+//static void i2c_bus_scan_task (void *arg) {
+//    i2c_master_init();
+//
+//    while (1) {
+//        for (uint8_t dev_address = 1U; dev_address < 127U; dev_address++) {
+//            i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+//            i2c_master_start(cmd);
+//            i2c_master_write_byte(cmd, (dev_address << 1) | I2C_MASTER_WRITE, I2C_ACK_CHECK_EN);
+//            i2c_master_stop(cmd);
+//            esp_err_t ret = i2c_master_cmd_begin(I2C_NUM_0, cmd, I2C_BUS_TICKS_TO_WAIT);
+//
+//            if (ret == ESP_OK) {
+//                ESP_LOGI(TAG, "found i2c device address = 0x%02x", dev_address);
+//            }
+//
+//            i2c_cmd_link_delete(cmd);
+//        }
+//
+//        vTaskDelay(pdMS_TO_TICKS(1000));
+//    }
+//
+//    i2c_driver_delete(I2C_EXAMPLE_MASTER_NUM);
+//}
+
+//static void ads1115_task(void *arg) {
+//    static const char *TASK_TAG = "ads1115_task";
+//    i2c_master_init();
+//    ads1115_t adc = ads1115_config(I2C_NUM_0, ADS111X_ADDR_GND);
+//    int16_t adc_raw = 0;
+//    double volts = 0;
+//    double amps = 0;
+//    static bool VA = true;
+//
+//    ads1115_set_mux(&adc, ADS1115_MUX_0_1);
+//    ads1115_set_pga(&adc, ADS1115_FSR_2_048);
+//    ads1115_set_mode(&adc, ADS1115_MODE_SINGLE);
+//    ads1115_set_sps(&adc, ADS1115_SPS_64); // than lower rate than more noise will be filtered with ads filter
+//    while (1) {
+//        if (VA) {
+//            power.lock = true;
+//            adc_raw = ads1115_get_raw(&adc);
+//            power.volts = ads1115_raw_to_voltage(&adc, adc_raw) * (double )VOLTAGE_DIVIDER_RATIO;
+//            ads1115_set_mux(&adc, ADS1115_MUX_2_3);
+//            VA = !VA;
+////            ESP_LOGI(TASK_TAG, "ADC AINP0N1 = %d | Volts = %f | Amp = %f | Free: %d", adc_raw, power.volts, power.amps, uxTaskGetStackHighWaterMark(NULL));
+//        } else {
+//            power.lock = true;
+//            adc_raw = ads1115_get_raw(&adc);
+//            volts = ads1115_raw_to_voltage(&adc, adc_raw);
+//            power.amps = volts / SHUNT_RESISTOR_Ohm;
+//            ads1115_set_mux(&adc, ADS1115_MUX_0_1);
+//            VA = !VA;
+////            ESP_LOGI(TASK_TAG, "ADC AINP2N3 = %d | Volts = %f | Amp = %f | Free: %d", adc_raw, power.volts, power.amps, uxTaskGetStackHighWaterMark(NULL));
+//        }
+//
+//        power.power = power.volts * power.amps;
+//        power.watts += power.power / (double )HOUR_MILLIS * (double)MEASURE_INTERVAL/2;
+//        power.amphour += power.amps / (double )HOUR_MILLIS * (double)MEASURE_INTERVAL/2;
+//        power.lock = false;
+//
+//        vTaskDelay(pdMS_TO_TICKS(MEASURE_INTERVAL)/2U);
+//    }
+//
+//    i2c_driver_delete(I2C_EXAMPLE_MASTER_NUM);
+//}
+
+static void measure(size_t n)
 {
-    int i2c_master_port = I2C_EXAMPLE_MASTER_NUM;
-    i2c_config_t conf;
-    conf.mode = I2C_MODE_MASTER;
-    conf.sda_io_num = I2C_EXAMPLE_MASTER_SDA_IO;
-    conf.sda_pullup_en = 1U;
-    conf.scl_io_num = I2C_EXAMPLE_MASTER_SCL_IO;
-    conf.scl_pullup_en = 1U;
-    conf.clk_stretch_tick = 300U; // 300 ticks, Clock stretch is about 210us, you can make changes according to the actual situation.
-    ESP_ERROR_CHECK(i2c_driver_install(i2c_master_port, conf.mode));
-    ESP_ERROR_CHECK(i2c_param_config(i2c_master_port, &conf));
-    return ESP_OK;
+    // wait for conversion end
+    bool busy;
+    do
+    {
+        ads111x_is_busy(&devices[n], &busy);
+    }
+    while (busy);
+
+    // Read result
+    int16_t raw = 0;
+    if (ads111x_get_value(&devices[n], &raw) == ESP_OK)
+    {
+        float voltage = gain_val / ADS111X_MAX_VALUE * raw;
+        printf("[%u] Raw ADC value: %d, voltage: %.04f volts\n", n, raw, voltage);
+    }
+    else
+        printf("[%u] Cannot read ADC value\n", n);
 }
 
-static void i2c_bus_scan_task (void *arg) {
-    i2c_master_init();
+// Main task
+void ads111x_test(void *pvParameters)
+{
+    gain_val = ads111x_gain_values[GAIN];
 
-    while (1) {
-        for (uint8_t dev_address = 1U; dev_address < 127U; dev_address++) {
-            i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-            i2c_master_start(cmd);
-            i2c_master_write_byte(cmd, (dev_address << 1) | I2C_MASTER_WRITE, I2C_ACK_CHECK_EN);
-            i2c_master_stop(cmd);
-            esp_err_t ret = i2c_master_cmd_begin(I2C_NUM_0, cmd, I2C_BUS_TICKS_TO_WAIT);
+    // Setup ICs
+    for (size_t i = 0; i < CONFIG_EXAMPLE_DEV_COUNT; i++)
+    {
+        ESP_ERROR_CHECK(ads111x_init_desc(&devices[i], addr[i], I2C_PORT, CONFIG_EXAMPLE_I2C_MASTER_SDA, CONFIG_EXAMPLE_I2C_MASTER_SCL));
 
-            if (ret == ESP_OK) {
-                ESP_LOGI(TAG, "found i2c device address = 0x%02x", dev_address);
-            }
-
-            i2c_cmd_link_delete(cmd);
-        }
-
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        ESP_ERROR_CHECK(ads111x_set_mode(&devices[i], ADS111X_MODE_CONTINUOUS));    // Continuous conversion mode
+        ESP_ERROR_CHECK(ads111x_set_data_rate(&devices[i], ADS111X_DATA_RATE_32)); // 32 samples per second
+        ESP_ERROR_CHECK(ads111x_set_input_mux(&devices[i], ADS111X_MUX_0_1));    // positive = AIN0, negative = GND
+        ESP_ERROR_CHECK(ads111x_set_gain(&devices[i], GAIN));
     }
 
-    i2c_driver_delete(I2C_EXAMPLE_MASTER_NUM);
-}
+    while (1)
+    {
+        for (size_t i = 0; i < CONFIG_EXAMPLE_DEV_COUNT; i++)
+            measure(i);
 
-static void ads1115_task(void *arg) {
-    static const char *TASK_TAG = "ads1115_task";
-    i2c_master_init();
-    ads1115_t adc = ads1115_config(I2C_NUM_0, ADS111X_ADDR_GND);
-    int16_t adc_raw = 0;
-    double volts = 0;
-    double amps = 0;
-    static bool VA = true;
-
-    ads1115_set_mux(&adc, ADS1115_MUX_0_1);
-    ads1115_set_pga(&adc, ADS1115_FSR_2_048);
-    ads1115_set_mode(&adc, ADS1115_MODE_SINGLE);
-    ads1115_set_sps(&adc, ADS1115_SPS_64); // than lower rate than more noise will be filtered with ads filter
-    while (1) {
-        if (VA) {
-            power.lock = true;
-            adc_raw = ads1115_get_raw(&adc);
-            power.volts = ads1115_raw_to_voltage(&adc, adc_raw) * (double )VOLTAGE_DIVIDER_RATIO;
-            ads1115_set_mux(&adc, ADS1115_MUX_2_3);
-            VA = !VA;
-//            ESP_LOGI(TASK_TAG, "ADC AINP0N1 = %d | Volts = %f | Amp = %f | Free: %d", adc_raw, power.volts, power.amps, uxTaskGetStackHighWaterMark(NULL));
-        } else {
-            power.lock = true;
-            adc_raw = ads1115_get_raw(&adc);
-            volts = ads1115_raw_to_voltage(&adc, adc_raw);
-            power.amps = volts / SHUNT_RESISTOR_Ohm;
-            ads1115_set_mux(&adc, ADS1115_MUX_0_1);
-            VA = !VA;
-//            ESP_LOGI(TASK_TAG, "ADC AINP2N3 = %d | Volts = %f | Amp = %f | Free: %d", adc_raw, power.volts, power.amps, uxTaskGetStackHighWaterMark(NULL));
-        }
-
-        power.power = power.volts * power.amps;
-        power.watts += power.power / (double )HOUR_MILLIS * (double)MEASURE_INTERVAL/2;
-        power.amphour += power.amps / (double )HOUR_MILLIS * (double)MEASURE_INTERVAL/2;
-        power.lock = false;
-
-        vTaskDelay(pdMS_TO_TICKS(MEASURE_INTERVAL)/2U);
+        vTaskDelay(pdMS_TO_TICKS(MEASURE_INTERVAL));
     }
-
-    i2c_driver_delete(I2C_EXAMPLE_MASTER_NUM);
 }
 
+//static void ads1115_task(void *arg) {
+//    static const char *TASK_TAG = "ads1115_task";
+//    i2c_master_init();
+//    ads1115_t adc = ads1115_config(I2C_NUM_0, ADS111X_ADDR_GND);
+//    int16_t adc_raw = 0;
+//    double volts = 0;
+//    double amps = 0;
+//    static bool VA = true;
+//
+//    ads1115_set_mux(&adc, ADS1115_MUX_0_1);
+//    ads1115_set_pga(&adc, ADS1115_FSR_2_048);
+//    ads1115_set_mode(&adc, ADS1115_MODE_SINGLE);
+//    ads1115_set_sps(&adc, ADS1115_SPS_64); // than lower rate than more noise will be filtered with ads filter
+//    while (1) {
+//        if (VA) {
+//            power.lock = true;
+//            adc_raw = ads1115_get_raw(&adc);
+//            power.volts = ads1115_raw_to_voltage(&adc, adc_raw) * (double )VOLTAGE_DIVIDER_RATIO;
+//            ads1115_set_mux(&adc, ADS1115_MUX_2_3);
+//            VA = !VA;
+////            ESP_LOGI(TASK_TAG, "ADC AINP0N1 = %d | Volts = %f | Amp = %f | Free: %d", adc_raw, power.volts, power.amps, uxTaskGetStackHighWaterMark(NULL));
+//        } else {
+//            power.lock = true;
+//            adc_raw = ads1115_get_raw(&adc);
+//            volts = ads1115_raw_to_voltage(&adc, adc_raw);
+//            power.amps = volts / SHUNT_RESISTOR_Ohm;
+//            ads1115_set_mux(&adc, ADS1115_MUX_0_1);
+//            VA = !VA;
+////            ESP_LOGI(TASK_TAG, "ADC AINP2N3 = %d | Volts = %f | Amp = %f | Free: %d", adc_raw, power.volts, power.amps, uxTaskGetStackHighWaterMark(NULL));
+//        }
+//
+//        power.power = power.volts * power.amps;
+//        power.watts += power.power / (double )HOUR_MILLIS * (double)MEASURE_INTERVAL/2;
+//        power.amphour += power.amps / (double )HOUR_MILLIS * (double)MEASURE_INTERVAL/2;
+//        power.lock = false;
+//
+//        vTaskDelay(pdMS_TO_TICKS(MEASURE_INTERVAL)/2U);
+//    }
+//
+//    i2c_driver_delete(I2C_EXAMPLE_MASTER_NUM);
+//}
 /*
  * MQTT Section
  */
@@ -333,7 +445,16 @@ void app_main(void)
 
     //start i2c task
     //xTaskCreate(i2c_bus_scan_task, "i2c_bus_scan_task", 2048, NULL, 10, NULL);
-    xTaskCreate(ads1115_task, "ads1115_task", 2048, NULL, 10, NULL);
+//    xTaskCreate(ads1115_task, "ads1115_task", 2048, NULL, 10, NULL);
+
+// Init library
+    ESP_ERROR_CHECK(i2cdev_init());
+
+    // Clear device descriptors
+    memset(devices, 0, sizeof(devices));
+
+    // Start task
+    xTaskCreatePinnedToCore(ads111x_test, "ads111x_test", configMINIMAL_STACK_SIZE * 8, NULL, 5, NULL, APP_CPU_NUM);
 
     ESP_LOGI(TAG, "[APP] Startup..");
     ESP_LOGI(TAG, "[APP] Free memory: %d bytes", esp_get_free_heap_size());
