@@ -4,6 +4,3 @@
 [submodule "components/screen"]
 	path = components/screen
 	url = https://github.com/hellvesper/esp8266-idf-screen-component.git
-[submodule "components/bus"]
-	path = components/bus
-	url = https://github.com/hellvesper/esp8266-idf-bus-component.git
