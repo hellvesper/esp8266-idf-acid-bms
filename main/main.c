@@ -22,6 +22,8 @@ software is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
 //#include "iot_board.h"
 #include "screen_driver.h"
 #include "img_array.h"
+#include "gpio.h"
+#include "spi.h"
 
 static const char *TAG = "screen example";
 
@@ -34,24 +36,38 @@ static const char *TAG = "screen example";
 
 #define MAX_ZOOM  2500
 #define ITERATION 128
+#define SPI_BUFFER_MAX_SIZE 4096
+#define BOARD_LCD_SPI_CS_PIN GPIO_NUM_15
+#define BOARD_LCD_SPI_DC_PIN GPIO_NUM_16
+#define BOARD_LCD_SPI_CLOCK_FREQ SPI_10MHz_DIV
+#define BOARD_LCD_SPI_RESET_PIN (-1)
+#define BOARD_LCD_SPI_BL_PIN (-1)
+
 
 static uint16_t g_color_table[ITERATION];
 static scr_driver_t g_lcd;
 static scr_info_t g_lcd_info;
+
+typedef struct {
+    int mosi_io_num;                ///< GPIO pin for Master Out Slave In (=spi_d) signal, or -1 if not used.
+    int miso_io_num;                ///< GPIO pin for Master In Slave Out (=spi_q) signal, or -1 if not used.
+    int sclk_io_num;                ///< GPIO pin for Spi CLocK signal, or -1 if not used.
+    int max_transfer_sz;            ///< Maximum transfer size, in bytes. Defaults to 4092 if 0 when DMA enabled, or to 64 if DMA is disabled.
+    uint32_t flags;                 ///< Abilities of bus to be checked by the driver. Or-ed value of ``SPICOMMON_BUSFLAG_*`` flags.
+    int intr_flags;    /**< Interrupt flag for the bus to set the priority, and IRAM attribute, see
+                         *  ``esp_intr_alloc.h``. Note that the EDGE, INTRDISABLED attribute are ignored
+                         *  by the driver. Note that if ESP_INTR_FLAG_IRAM is set, ALL the callbacks of
+                         *  the driver, and their callee functions, should be put in the IRAM.
+                         */
+} spi_bus_config_t;
 
 /*
  * Inits
  */
 static esp_err_t board_spi_bus_init(void)
 {
-    spi_bus_config_t bus_conf = {
-        .miso_io_num = GPIO_NUM_12,
-        .mosi_io_num = GPIO_NUM_13,
-        .sclk_io_num = GPIO_NUM_14,
-        .max_transfer_sz = CONFIG_BOARD_SPI2_MAX_TXF_SIZE
-    };
-    s_spi2_bus_handle = spi_bus_create(SPI2_HOST, &bus_conf);
-    BOARD_CHECK(s_spi2_bus_handle != NULL, "spi_bus2 create failed", ESP_FAIL);
+    // TODO add spi_bus init
+    // SPI interface initialized by scr_interface_create() in app_main
     ESP_LOGI(TAG, "spi2 bus create succeed");
 
     return ESP_OK;
@@ -218,17 +234,13 @@ static void lcd_speed_test(scr_driver_t *lcd)
 void app_main(void)
 {
     esp_err_t ret = ESP_OK;
-#if USE_SPI_SCREEN
-    iot_board_init();
 
-#if defined(CONFIG_BOARD_ESP32_M5STACK)
-    spi_bus_handle_t spi_bus = iot_board_get_handle(BOARD_SPI3_ID);
-#else
-    spi_bus_handle_t spi_bus = iot_board_get_handle(BOARD_SPI2_ID);
-#endif
+    board_spi_bus_init();
+
+//    spi_bus_handle_t spi_bus = iot_board_get_handle(BOARD_SPI2_ID);
 
     scr_interface_spi_config_t spi_lcd_cfg = {
-            .spi_bus = spi_bus,
+//            .spi_bus = NULL,
             .pin_num_cs = BOARD_LCD_SPI_CS_PIN,
             .pin_num_dc = BOARD_LCD_SPI_DC_PIN,
             .clk_freq = BOARD_LCD_SPI_CLOCK_FREQ,
@@ -237,11 +249,9 @@ void app_main(void)
 
     scr_interface_driver_t *iface_drv;
     scr_interface_create(SCREEN_IFACE_SPI, &spi_lcd_cfg, &iface_drv);
-#if defined(CONFIG_BOARD_ESP32_M5STACK)
-    ret = scr_find_driver(SCREEN_CONTROLLER_ILI9342, &g_lcd);
-#else
+
     ret = scr_find_driver(SCREEN_CONTROLLER_ILI9341, &g_lcd);
-#endif
+
     if (ESP_OK != ret) {
         return;
         ESP_LOGE(TAG, "screen find failed");
@@ -255,71 +265,14 @@ void app_main(void)
             .bckl_active_level = 1,
             .offset_hor = 0,
             .offset_ver = 0,
-#if defined(CONFIG_BOARD_ESP32_M5STACK)
-            .width = 320,
-        .height = 240,
-        .rotate = SCR_DIR_LRTB,
-#else
+
             .width = 240,
             .height = 320,
             .rotate = SCR_DIR_BTRL,
-#endif
+
     };
     ret = g_lcd.init(&lcd_cfg);
-#else
 
-    i2s_lcd_config_t i2s_lcd_cfg = {
-        .data_width  = BOARD_LCD_I2S_BITWIDTH,
-        .pin_data_num = {
-            BOARD_LCD_I2S_D0_PIN,
-            BOARD_LCD_I2S_D1_PIN,
-            BOARD_LCD_I2S_D2_PIN,
-            BOARD_LCD_I2S_D3_PIN,
-            BOARD_LCD_I2S_D4_PIN,
-            BOARD_LCD_I2S_D5_PIN,
-            BOARD_LCD_I2S_D6_PIN,
-            BOARD_LCD_I2S_D7_PIN,
-            BOARD_LCD_I2S_D8_PIN,
-            BOARD_LCD_I2S_D9_PIN,
-            BOARD_LCD_I2S_D10_PIN,
-            BOARD_LCD_I2S_D11_PIN,
-            BOARD_LCD_I2S_D12_PIN,
-            BOARD_LCD_I2S_D13_PIN,
-            BOARD_LCD_I2S_D14_PIN,
-            BOARD_LCD_I2S_D15_PIN,
-        },
-        .pin_num_cs = BOARD_LCD_I2S_CS_PIN,
-        .pin_num_wr = BOARD_LCD_I2S_WR_PIN,
-        .pin_num_rs = BOARD_LCD_I2S_RS_PIN,
-
-        .clk_freq = 20000000,
-        .i2s_port = I2S_NUM_0,
-        .buffer_size = 32000,
-        .swap_data = true,
-    };
-
-    scr_interface_driver_t *iface_drv;
-    scr_interface_create(SCREEN_IFACE_8080, &i2s_lcd_cfg, &iface_drv);
-
-    ret = scr_find_driver(SCREEN_CONTROLLER_ILI9806, &g_lcd);
-    if (ESP_OK != ret) {
-        return;
-        ESP_LOGE(TAG, "screen find failed");
-    }
-    scr_controller_config_t lcd_cfg = {
-        .interface_drv = iface_drv,
-        .pin_num_rst = BOARD_LCD_I2S_RESET_PIN,
-        .pin_num_bckl = BOARD_LCD_I2S_BL_PIN,
-        .rst_active_level = 0,
-        .bckl_active_level = 1,
-        .offset_hor = 0,
-        .offset_ver = 0,
-        .width = 480,
-        .height = 854,
-        .rotate = SCR_SWAP_XY | SCR_MIRROR_Y, /** equal to SCR_DIR_BTLR */
-    };
-    ret = g_lcd.init(&lcd_cfg);
-#endif
     if (ESP_OK != ret) {
         return;
         ESP_LOGE(TAG, "screen initialize failed");
